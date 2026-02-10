@@ -89,7 +89,7 @@ app_ui = ui.page_fluid(
         (function () {
           const LABEL = "Market Cap (EUR)";
           const TIP = "Reporting Price: Close (day before quarter start)";
-          const formatNumber = new Intl.NumberFormat("de-DE", {
+          const formatNumber = new Intl.NumberFormat("en-US", {
             maximumFractionDigits: 0,
           });
           function applyTip() {
@@ -124,11 +124,14 @@ app_ui = ui.page_fluid(
                 if (!cell) return;
                 const raw = (cell.textContent || "").trim();
                 if (!raw || raw.startsWith("€")) return;
-                const cleaned = raw.replace(/[^0-9-]/g, "");
+                let cleaned = raw.replace(/[^\\d.,-]/g, "");
                 if (!cleaned) return;
-                const numeric = Number(cleaned);
+                cleaned = cleaned.replace(/,/g, "");
+                const dots = (cleaned.match(/\\./g) || []).length;
+                if (dots > 1) cleaned = cleaned.replace(/\./g, "");
+                const numeric = parseFloat(cleaned);
                 if (Number.isFinite(numeric)) {
-                  const formatted = `€ ${formatNumber.format(numeric)}`;
+                  const formatted = `€ ${formatNumber.format(Math.round(numeric))}`;
                   if (cell.textContent !== formatted) cell.textContent = formatted;
                 }
               });
