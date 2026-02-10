@@ -11,13 +11,6 @@ https://jakobsar.shinyapps.io/euro500/
 
 ## Project Overview
 
-The repository includes:
-
-- A **data construction pipeline** that:
-  - Builds a quarterly-rebalanced universe of euro-area equities
-  - Excludes financial firms and non-operating instruments (e.g. ETFs, indices)
-  - Ranks firms by market capitalization at each quarter-end
-
 - An **interactive dashboard** that:
   - Allows exploration of EURO500 constituents by year (and quarter)
   - Displays firm-level characteristics and summary statistics
@@ -35,3 +28,39 @@ The **EURO500** universe is defined as:
 - Instruments without a valid TRBC sector (e.g. ETFs, funds) are excluded
 
 The universe is rebalanced **quarterly**.
+
+---
+
+## Setup
+
+### 1. Create and activate a virtual environment
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 2. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Run the Dashboard
+To run the code you need the data file Project_Data/intermediate/euro500.parquet
+```bash
+shiny run euro500_dashboard_app.py
+```
+
+The dashboard will be available at
+http://localhost:8000
+
+
+
+
+
+
+
+
+
+
+
+
