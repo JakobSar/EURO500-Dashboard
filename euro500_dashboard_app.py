@@ -128,7 +128,7 @@ app_ui = ui.page_fluid(
                 if (!cleaned) return;
                 cleaned = cleaned.replace(/,/g, "");
                 const dots = (cleaned.match(/\\./g) || []).length;
-                if (dots > 1) cleaned = cleaned.replace(/\./g, "");
+                if (dots > 1) cleaned = cleaned.replace(/\\./g, "");
                 const numeric = parseFloat(cleaned);
                 if (Number.isFinite(numeric)) {
                   const formatted = `€ ${formatNumber.format(Math.round(numeric))}`;
@@ -177,11 +177,17 @@ app_ui = ui.page_fluid(
         }
         body { color: var(--ink); background: #f8fafc; }
         .app-title { margin-top: 0.9rem; margin-bottom: 0.35rem; letter-spacing: 0.2px; }
+        .title-link { color: inherit; text-decoration: none; }
+        .title-link:hover { text-decoration: none; }
         .muted { color: var(--muted); }
         .card-title { margin-bottom: 0.25rem; }
         .vb-number { font-size: 1.7rem; font-weight: 700; line-height: 1.2; }
         .vb-label { font-size: 0.9rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
         .vb-row { margin-bottom: 0.15rem; }
+        /* Make KPI cards in vb-row equal-height by stretching columns */
+        .vb-row { align-items: stretch; }
+        .vb-row > div[class^="col"], .vb-row > div[class*=" col"] { display: flex; }
+        .vb-row > div[class^="col"] > .card, .vb-row > div[class*=" col"] > .card { width: 100%; }
         .table-card { margin-top: -0.25rem; }
         .main-stack { display: flex; flex-direction: column; gap: 0.4rem; }
         .plot-card { margin-top: 0.25rem; }
@@ -189,6 +195,11 @@ app_ui = ui.page_fluid(
         .html-widget { width: 100% !important; display: block; }
         .plotly-graph-div { width: 100% !important; height: 100% !important; }
         .card { background: var(--card-bg); border: 1px solid var(--stroke); box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04); }
+        /* Ensure selectize dropdowns aren't clipped by cards/containers */
+        .card, .card-body, .main-stack, .sidebar { overflow: visible !important; }
+        .selectize-control { position: relative; }
+        .selectize-dropdown { z-index: 3000 !important; }
+        .selectize-dropdown-content { max-height: 420px; }
         shiny-data-frame#tbl .shiny-data-grid > table {
           table-layout: fixed;
         }
@@ -214,7 +225,10 @@ app_ui = ui.page_fluid(
         """
     ),
 
-    ui.h2("Euro500 Equity Universe Explorer", class_="app-title fw-bold"),
+    ui.h2(
+        ui.input_action_link("go_home", "Euro500 Equity Universe Explorer", class_="title-link"),
+        class_="app-title fw-bold",
+    ),
     ui.p(
         "A snapshot of the Euro500 equity universe: the 500 largest non‑financial companies by market cap headquartered in the euro area.",
         class_="muted",
@@ -240,6 +254,8 @@ app_ui = ui.page_fluid(
             ui.hr(),
             ui.input_action_button("toggle_view", "Explore Time Variation"),
             ui.hr(),
+            ui.input_action_button("toggle_company", "Explore by Company"),
+            ui.hr(),
             ui.p("Data Source:", class_="muted tight-label"),
             ui.span("LSEG Datastream", class_="tight-value"),
             ui.p("Created by:", class_="muted tight-label"),
@@ -263,11 +279,24 @@ import pandas as pd
 
 def server(input, output, session):
     show_time = reactive.value(False)
+    page = reactive.value("main")  # "main" | "company"
 
     @reactive.effect
     @reactive.event(input.toggle_view)
     def _toggle_view():
         show_time.set(not show_time.get())
+
+    @reactive.effect
+    @reactive.event(input.go_home)
+    def _go_home():
+        page.set("main")
+        show_time.set(False)
+
+    @reactive.effect
+    @reactive.event(input.toggle_company)
+    def _toggle_company():
+        # Toggle between main dashboard and company page
+        page.set("main" if page.get() == "company" else "company")
 
     # ---- Quarter choices based on selected year ----
     @reactive.effect
@@ -417,6 +446,84 @@ def server(input, output, session):
             ui.div("TRBC sectors", class_="vb-label"),
         )
 
+    @render.ui
+    def vb_company_years():
+        d = _company_df()
+        if d.empty:
+            years = 0.0
+        else:
+            if "q_label" in d.columns:
+                qn = int(d["q_label"].dropna().astype(str).nunique())
+            elif "date" in d.columns:
+                q = pd.to_datetime(d["date"], errors="coerce").dt.to_period("Q").astype(str)
+                qn = int(q.dropna().nunique())
+            else:
+                qn = 0
+            years = qn / 4.0
+
+        if years.is_integer():
+            value = str(int(years))
+        else:
+            value = f"{years:.2f}".rstrip("0").rstrip(".")
+        return ui.div(
+            ui.div(value, class_="vb-number"),
+            ui.div("quarters / 4", class_="vb-label"),
+        )
+
+    @render.ui
+    def vb_company_best_rank():
+        d = _company_df()
+        if d.empty or "rank_mcap" not in d.columns:
+            value = "–"
+        else:
+            r = pd.to_numeric(d["rank_mcap"], errors="coerce")
+            r = r.where(r >= 1)  # ignore 0 / invalid encodings
+            if r.dropna().empty:
+                value = "–"
+            else:
+                value = str(int(r.min()))
+        return ui.div(
+            ui.div(value, class_="vb-number"),
+            ui.div("best (min) rank", class_="vb-label"),
+        )
+
+    def _most_common_str(d: pd.DataFrame, col: str) -> str:
+        if col not in d.columns:
+            return ""
+        s = d[col].dropna().astype(str)
+        s = s[s.str.strip() != ""]
+        if s.empty:
+            return ""
+        return str(s.value_counts().idxmax())
+
+    @render.ui
+    def vb_company_hq_country():
+        d = _company_df()
+        if d.empty:
+            value = "–"
+        else:
+            col = "hq_country" if "hq_country" in d.columns else ("hq_code" if "hq_code" in d.columns else "")
+            v = _most_common_str(d, col) if col else ""
+            value = v if v else "–"
+        return ui.div(
+            ui.div(value, class_="vb-number"),
+            ui.div("", class_="vb-label"),
+        )
+
+    @render.ui
+    def vb_company_sector():
+        d = _company_df()
+        if d.empty:
+            value = "–"
+        else:
+            col = "trbc_sector" if "trbc_sector" in d.columns else ("trbc_sector_code" if "trbc_sector_code" in d.columns else "")
+            v = _most_common_str(d, col) if col else ""
+            value = v if v else "–"
+        return ui.div(
+            ui.div(value, class_="vb-number"),
+            ui.div("", class_="vb-label"),
+        )
+
     # ---- Table ----
     @render.data_frame
     def tbl():
@@ -465,9 +572,188 @@ def server(input, output, session):
             return "q_label_tmp", labels
         return "", []
 
+    def _safe_input(name: str, default=""):
+        # Inputs on the company page are created dynamically. Guard access here to
+        # avoid server-side errors during initial render / page switches.
+        try:
+            fn = getattr(input, name)
+        except Exception:
+            return default
+        try:
+            return fn()
+        except Exception:
+            return default
+
+    @reactive.calc
+    def _company_df() -> pd.DataFrame:
+        ric = str(_safe_input("company_choice", "")).strip()
+        if ric == "" or "RIC" not in DF.columns:
+            return pd.DataFrame()
+        return DF.loc[DF["RIC"].astype(str) == ric].copy()
+
+    @reactive.calc
+    def _companies_master() -> pd.DataFrame:
+        cols = ["RIC"] + (["name"] if "name" in DF.columns else [])
+        d = DF.loc[:, [c for c in cols if c in DF.columns]].drop_duplicates().copy()
+        if "RIC" in d.columns:
+            d["RIC"] = d["RIC"].astype(str)
+        if "name" in d.columns:
+            d["name"] = d["name"].astype(str)
+        return d
+
+    @reactive.effect
+    def _update_company_choices():
+        if page.get() != "company":
+            return
+
+        q = str(_safe_input("company_search", "")).strip()
+        if q == "":
+            ui.update_selectize("company_choice", choices=[], selected=[])
+            return
+
+        master = _companies_master()
+        if master.empty or "RIC" not in master.columns:
+            ui.update_selectize("company_choice", choices=[], selected=[])
+            return
+
+        q_upper = q.upper()
+        ric = master["RIC"].fillna("").astype(str)
+        if "name" in master.columns:
+            nm = master["name"].fillna("").astype(str)
+        else:
+            nm = pd.Series([""] * len(master), index=master.index)
+
+        # Ranking: exact RIC > RIC startswith > contains in RIC/name
+        exact_ric = ric.str.upper().eq(q_upper)
+        starts_ric = ric.str.upper().str.startswith(q_upper)
+        contains_any = ric.str.upper().str.contains(q_upper, na=False) | nm.str.upper().str.contains(q_upper, na=False)
+
+        matches = master.loc[contains_any].copy()
+        if matches.empty:
+            ui.update_selectize("company_choice", choices=[], selected=[])
+            return
+
+        m_ric = matches["RIC"].astype(str)
+        m_nm = matches["name"].astype(str) if "name" in matches.columns else pd.Series([""] * len(matches), index=matches.index)
+
+        m_exact = m_ric.str.upper().eq(q_upper)
+        m_starts = m_ric.str.upper().str.startswith(q_upper)
+        matches["_rank"] = (
+            m_exact.map({True: 0, False: 1}).astype(int) * 100
+            + m_starts.map({True: 0, False: 1}).astype(int) * 10
+        )
+        if "name" in matches.columns:
+            matches["_name_sort"] = m_nm.str.upper()
+        else:
+            matches["_name_sort"] = ""
+
+        matches = matches.sort_values(["_rank", "_name_sort", "RIC"], kind="mergesort").head(50)
+
+        # Display "RIC — Name" but use RIC as the value
+        if "name" in matches.columns:
+            labels = (matches["RIC"].astype(str) + " — " + matches["name"].astype(str)).tolist()
+        else:
+            labels = matches["RIC"].astype(str).tolist()
+        values = matches["RIC"].astype(str).tolist()
+        # For selectize, dict keys are the *values* sent to server; dict values are labels shown to user.
+        choices = dict(zip(values, labels))
+
+        selected = _safe_input("company_choice", "")
+        if selected not in set(values):
+            # If the query is an exact RIC match, auto-select it; else leave empty.
+            if q_upper in set(v.upper() for v in values):
+                # pick the first exact match (case-insensitive)
+                for v in values:
+                    if v.upper() == q_upper:
+                        selected = v
+                        break
+            else:
+                selected = ""
+
+        ui.update_selectize("company_choice", choices=choices, selected=selected)
+
     # ---- Main panel switch ----
     @render.ui
     def main_panel():
+        if page.get() == "company":
+            return ui.div(
+                ui.card(
+                    ui.card_header("Explore by Company"),
+                    ui.row(
+                        ui.column(
+                            7,
+                            ui.input_text(
+                                "company_search",
+                                "Search",
+                                value="",
+                                width="100%",
+                                placeholder="Type a RIC (e.g., SAPG.DE) or company name",
+                            ),
+                        ),
+                        ui.column(
+                            5,
+                            ui.input_selectize(
+                                "company_choice",
+                                "Company",
+                                choices={},
+                                selected="",
+                                multiple=False,
+                                width="100%",
+                                options={"placeholder": "Matches will appear here"},
+                            ),
+                        ),
+                    ),
+                ),
+                ui.row(
+                    ui.column(
+                        3,
+                        ui.card(
+                            ui.h6("Years in Index", class_="card-title"),
+                            ui.output_ui("vb_company_years"),
+                            full_screen=False,
+                        ),
+                    ),
+                    ui.column(
+                        3,
+                        ui.card(
+                            ui.h6("Best Rank Ever", class_="card-title"),
+                            ui.output_ui("vb_company_best_rank"),
+                            full_screen=False,
+                        ),
+                    ),
+                    ui.column(
+                        3,
+                        ui.card(
+                            ui.h6("HQ Country", class_="card-title"),
+                            ui.output_ui("vb_company_hq_country"),
+                            full_screen=False,
+                        ),
+                    ),
+                    ui.column(
+                        3,
+                        ui.card(
+                            ui.h6("Sector", class_="card-title"),
+                            ui.output_ui("vb_company_sector"),
+                            full_screen=False,
+                        ),
+                    ),
+                    class_="vb-row",
+                ),
+                ui.card(
+                    ui.card_header("Market Cap by Quarter (0 if not in index)"),
+                    output_widget("plot_company_mcap", width="100%", height="360px"),
+                    class_="plot-card company-mcap-card",
+                    full_screen=False,
+                ),
+                ui.card(
+                    ui.card_header("Rank in Index Over Time"),
+                    output_widget("plot_company_rank", width="100%", height="360px"),
+                    class_="plot-card",
+                    full_screen=False,
+                ),
+                class_="main-stack",
+            )
+
         if not show_time.get():
             return ui.div(
                 ui.row(
@@ -769,6 +1055,202 @@ def server(input, output, session):
         fig.update_traces(
             hovertemplate="Year: %{x}<br>Country: %{fullData.name}<br>Index Share: %{y:.1f}%<extra></extra>"
         )
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    @render_widget
+    def plot_company_mcap():
+        if page.get() != "company":
+            return px.bar()
+
+        ric = str(_safe_input("company_choice", "")).strip()
+        if ric == "":
+            fig = px.bar()
+            fig.add_annotation(text="Search and select a company to see the chart.", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d_all = DF.copy()
+        label_col, labels = _time_series_labels(d_all)
+        if not labels or not label_col:
+            fig = px.bar()
+            fig.add_annotation(text="No quarter information available in dataset.", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d = DF.loc[DF["RIC"].astype(str) == ric].copy()
+        if d.empty:
+            fig = px.bar()
+            fig.add_annotation(text=f"No data found for RIC: {ric}", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        if "mcap_eur" not in d.columns:
+            fig = px.bar()
+            fig.add_annotation(text="Dataset has no 'mcap_eur' column.", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        # Ensure company df has the same label column as the global label list.
+        if label_col not in d.columns:
+            if label_col == "q_label_tmp" and "date" in d.columns:
+                q = pd.to_datetime(d["date"], errors="coerce").dt.to_period("Q").astype(str)
+                d["q_label_tmp"] = q
+            else:
+                fig = px.bar()
+                fig.add_annotation(text="Quarter labeling not available for this dataset.", x=0.5, y=0.5, showarrow=False)
+                fig.update_xaxes(visible=False)
+                fig.update_yaxes(visible=False)
+                return fig
+
+        # One bar per quarter. If duplicates exist within a quarter, use max mcap.
+        series = d.groupby(label_col)["mcap_eur"].max()
+        series = series.reindex(labels).fillna(0.0) / 1e9
+
+        name = ""
+        if "name" in d.columns:
+            try:
+                name = str(d["name"].dropna().iloc[0])
+            except Exception:
+                name = ""
+
+        x = [str(lbl) for lbl in labels]
+        y = series.values.tolist()
+        title = name if name else ""
+
+        fig = px.bar(x=x, y=y)
+        fig.update_layout(
+            title=title,
+            xaxis_title="Quarter",
+            yaxis_title="Market cap (EUR bn)",
+            margin=dict(l=60, r=20, t=50, b=45),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            autosize=True,
+        )
+        fig.update_traces(marker_color="#0ea5a4", hovertemplate="Quarter: %{x}<br>Market cap: %{y:.1f} bn<extra></extra>")
+        fig.update_xaxes(showgrid=False, type="category", automargin=True)
+        fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb", automargin=True)
+        tickvals, ticktext = _five_year_ticks(labels)
+        if tickvals:
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    @render_widget
+    def plot_company_rank():
+        if page.get() != "company":
+            return px.line()
+
+        ric = str(_safe_input("company_choice", "")).strip()
+        if ric == "":
+            fig = px.line()
+            fig.add_annotation(text="Search and select a company to see the chart.", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        if "rank_mcap" not in DF.columns:
+            fig = px.line()
+            fig.add_annotation(text="Dataset has no 'rank_mcap' column.", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d_all = DF.copy()
+        label_col, labels = _time_series_labels(d_all)
+        if not labels or not label_col:
+            fig = px.line()
+            fig.add_annotation(text="No quarter information available in dataset.", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d = DF.loc[DF["RIC"].astype(str) == ric].copy()
+        if d.empty:
+            fig = px.line()
+            fig.add_annotation(text=f"No data found for RIC: {ric}", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        if label_col not in d.columns:
+            if label_col == "q_label_tmp" and "date" in d.columns:
+                q = pd.to_datetime(d["date"], errors="coerce").dt.to_period("Q").astype(str)
+                d["q_label_tmp"] = q
+            else:
+                fig = px.line()
+                fig.add_annotation(text="Quarter labeling not available for this dataset.", x=0.5, y=0.5, showarrow=False)
+                fig.update_xaxes(visible=False)
+                fig.update_yaxes(visible=False)
+                return fig
+
+        # One rank per quarter; use best (minimum) rank if multiple rows exist.
+        series = pd.to_numeric(d["rank_mcap"], errors="coerce")
+        # Guard against datasets that encode "not ranked / not in index" as 0.
+        series = series.where(series >= 1)
+        d["_rank_num"] = series
+        s = d.groupby(label_col)["_rank_num"].min()
+        s = s.reindex(labels)  # keep NaN for quarters not in index
+
+        name = ""
+        if "name" in d.columns:
+            try:
+                name = str(d["name"].dropna().iloc[0])
+            except Exception:
+                name = ""
+
+        x = [str(lbl) for lbl in labels]
+        y = s.values.tolist()
+        title = name if name else ""
+
+        fig = px.line(x=x, y=y, markers=False)
+        fig.update_layout(
+            title=title,
+            xaxis_title="Quarter",
+            yaxis_title="Rank (1 = largest)",
+            margin=dict(l=60, r=20, t=50, b=45),
+            hovermode="x unified",
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            autosize=True,
+        )
+        fig.update_traces(line=dict(color="#111827", width=3), hovertemplate="Quarter: %{x}<br>Rank: %{y:.0f}<extra></extra>")
+        fig.update_xaxes(showgrid=False, type="category", automargin=True)
+        ymax = None
+        try:
+            vmax = float(pd.Series(y).dropna().max())
+            if vmax >= 1:
+                ymax = vmax
+        except Exception:
+            ymax = None
+        if ymax is not None:
+            fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb", autorange=False, range=[ymax, 1], automargin=True)
+        else:
+            fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb", autorange="reversed", automargin=True)
+        tickvals, ticktext = _five_year_ticks(labels)
+        if tickvals:
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
         fig.update_layout(
             dragmode=False,
             modebar_remove=[
