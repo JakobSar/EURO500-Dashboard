@@ -15,10 +15,10 @@ import plotly.express as px
 # - RIC
 #
 # Optional (used if available):
-# name, hq_country, hq_code, trbc_sector, trbc_sector_code, mcap_eur, rank_mcap
+# name, hq_country, hq_code, sector, trbc_sector, trbc_sector_code, mcap_eur, rank_mcap
 # =============================================================================
 
-DATA_FILE = Path("euro500.parquet")
+DATA_FILE = Path("euro500_dashboard_table.parquet")
 
 
 def load_euro500_data() -> pd.DataFrame:
@@ -30,7 +30,7 @@ def load_euro500_data() -> pd.DataFrame:
     if not DATA_FILE.exists():
         # show helpful directory listing
         parent = DATA_FILE.parent
-        msg = [f"Euro500 parquet not found at:\n{DATA_FILE}\n"]
+        msg = [f"Euro500 dashboard table parquet not found at:\n{DATA_FILE}\n"]
         if parent.exists():
             msg.append(f"Files in {parent}:\n" + "\n".join(sorted(p.name for p in parent.iterdir())[:200]))
         else:
@@ -64,7 +64,7 @@ def load_euro500_data() -> pd.DataFrame:
     preferred = [
         "date", "year", "RIC", "name",
         "hq_country", "hq_code",
-        "trbc_sector", "trbc_sector_code",
+        "sector", "trbc_sector", "trbc_sector_code",
         "mcap_eur", "rank_mcap",
     ]
     cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
@@ -294,6 +294,18 @@ def server(input, output, session):
     show_time = reactive.value(False)
     page = reactive.value("main")  # "main" | "company"
 
+    def _first_existing_col(d: pd.DataFrame, candidates: list[str]) -> str | None:
+        for c in candidates:
+            if c in d.columns:
+                return c
+        return None
+
+    def _company_id_col(d: pd.DataFrame) -> str | None:
+        return _first_existing_col(d, ["ISIN", "isin", "RIC"])
+
+    def _sector_col(d: pd.DataFrame) -> str | None:
+        return _first_existing_col(d, ["sector", "trbc_sector", "trbc_sector_code"])
+
     @reactive.effect
     @reactive.event(input.toggle_view)
     def _toggle_view():
@@ -385,8 +397,9 @@ def server(input, output, session):
                 sort_cols.append("date"); asc.append(False)
             if "mcap_eur" in d.columns:
                 sort_cols.append("mcap_eur"); asc.append(False)
-            if "RIC" in d.columns:
-                sort_cols.append("RIC"); asc.append(True)
+            id_col = _company_id_col(d)
+            if id_col:
+                sort_cols.append(id_col); asc.append(True)
 
             if sort_cols:
                 d = d.sort_values(sort_cols, ascending=asc, kind="mergesort")
@@ -433,7 +446,8 @@ def server(input, output, session):
     @render.ui
     def vb_firms():
         d = filtered()
-        n = int(d["RIC"].nunique()) if ("RIC" in d.columns) else 0
+        id_col = _company_id_col(d)
+        n = int(d[id_col].nunique()) if id_col else 0
         return ui.div(
             ui.div(f"{n:,}".replace(",", "."), class_="vb-number"),
             ui.div("unique companies", class_="vb-label"),
@@ -452,7 +466,7 @@ def server(input, output, session):
     @render.ui
     def vb_sectors():
         d = filtered()
-        col = "trbc_sector" if "trbc_sector" in d.columns else None
+        col = _sector_col(d)
         n = int(d[col].nunique()) if col else 0
         return ui.div(
             ui.div(f"{n:,}".replace(",", "."), class_="vb-number"),
@@ -529,7 +543,7 @@ def server(input, output, session):
         if d.empty:
             value = "–"
         else:
-            col = "trbc_sector" if "trbc_sector" in d.columns else ("trbc_sector_code" if "trbc_sector_code" in d.columns else "")
+            col = _sector_col(d) or ""
             v = _most_common_str(d, col) if col else ""
             value = v if v else "–"
         return ui.div(
@@ -542,7 +556,7 @@ def server(input, output, session):
     def tbl():
         d = filtered()
         d = d.drop(
-            columns=["date", "year", "q_year", "q_num", "q_label", "hq_code", "trbc_sector_code", "RIC"],
+            columns=["date", "year", "q_year", "q_num", "q_label", "hq_code", "trbc_sector_code", "RIC", "ISIN", "isin"],
             errors="ignore",
         )
         if "mcap_eur" in d.columns:
@@ -554,11 +568,13 @@ def server(input, output, session):
         rename_map = {
             "name": "Company",
             "hq_country": "HQ Country",
+            "sector": "Economic Sector",
             "trbc_sector": "Economic Sector",
             "mcap_eur": "Market Cap (EUR mio.)",
             "rank_mcap": "Rank",
         }
-        preferred_order = ["name", "hq_country", "trbc_sector", "mcap_eur", "rank_mcap"]
+        sector_col = _first_existing_col(d, ["sector", "trbc_sector"])
+        preferred_order = ["name", "hq_country"] + ([sector_col] if sector_col else []) + ["mcap_eur", "rank_mcap"]
         ordered_cols = [c for c in preferred_order if c in d.columns]
         if ordered_cols:
             d = d[ordered_cols]
@@ -600,17 +616,21 @@ def server(input, output, session):
 
     @reactive.calc
     def _company_df() -> pd.DataFrame:
-        ric = str(_safe_input("company_choice", "")).strip()
-        if ric == "" or "RIC" not in DF.columns:
+        company_id = str(_safe_input("company_choice", "")).strip()
+        id_col = _company_id_col(DF)
+        if company_id == "" or not id_col:
             return pd.DataFrame()
-        return DF.loc[DF["RIC"].astype(str) == ric].copy()
+        return DF.loc[DF[id_col].astype(str) == company_id].copy()
 
     @reactive.calc
     def _companies_master() -> pd.DataFrame:
-        cols = ["RIC"] + (["name"] if "name" in DF.columns else [])
+        id_col = _company_id_col(DF)
+        if not id_col:
+            return pd.DataFrame()
+        cols = [id_col] + (["name"] if "name" in DF.columns else [])
         d = DF.loc[:, [c for c in cols if c in DF.columns]].drop_duplicates().copy()
-        if "RIC" in d.columns:
-            d["RIC"] = d["RIC"].astype(str)
+        if id_col in d.columns:
+            d[id_col] = d[id_col].astype(str)
         if "name" in d.columns:
             d["name"] = d["name"].astype(str)
         return d
@@ -626,32 +646,33 @@ def server(input, output, session):
             return
 
         master = _companies_master()
-        if master.empty or "RIC" not in master.columns:
+        id_col = _company_id_col(master)
+        if master.empty or not id_col:
             ui.update_selectize("company_choice", choices=[], selected=[])
             return
 
         q_upper = q.upper()
-        ric = master["RIC"].fillna("").astype(str)
+        ids = master[id_col].fillna("").astype(str)
         if "name" in master.columns:
             nm = master["name"].fillna("").astype(str)
         else:
             nm = pd.Series([""] * len(master), index=master.index)
 
-        # Ranking: exact RIC > RIC startswith > contains in RIC/name
-        exact_ric = ric.str.upper().eq(q_upper)
-        starts_ric = ric.str.upper().str.startswith(q_upper)
-        contains_any = ric.str.upper().str.contains(q_upper, na=False) | nm.str.upper().str.contains(q_upper, na=False)
+        # Ranking: exact ID > ID startswith > contains in ID/name
+        exact_id = ids.str.upper().eq(q_upper)
+        starts_id = ids.str.upper().str.startswith(q_upper)
+        contains_any = ids.str.upper().str.contains(q_upper, na=False) | nm.str.upper().str.contains(q_upper, na=False)
 
         matches = master.loc[contains_any].copy()
         if matches.empty:
             ui.update_selectize("company_choice", choices=[], selected=[])
             return
 
-        m_ric = matches["RIC"].astype(str)
+        m_id = matches[id_col].astype(str)
         m_nm = matches["name"].astype(str) if "name" in matches.columns else pd.Series([""] * len(matches), index=matches.index)
 
-        m_exact = m_ric.str.upper().eq(q_upper)
-        m_starts = m_ric.str.upper().str.startswith(q_upper)
+        m_exact = m_id.str.upper().eq(q_upper)
+        m_starts = m_id.str.upper().str.startswith(q_upper)
         matches["_rank"] = (
             m_exact.map({True: 0, False: 1}).astype(int) * 100
             + m_starts.map({True: 0, False: 1}).astype(int) * 10
@@ -661,20 +682,20 @@ def server(input, output, session):
         else:
             matches["_name_sort"] = ""
 
-        matches = matches.sort_values(["_rank", "_name_sort", "RIC"], kind="mergesort").head(50)
+        matches = matches.sort_values(["_rank", "_name_sort", id_col], kind="mergesort").head(50)
 
-        # Show company names only in the UI; keep RIC as the internal value.
+        # Show company names only in the UI; keep ID as the internal value.
         if "name" in matches.columns:
             labels = matches["name"].astype(str).tolist()
         else:
             labels = ["Unnamed company"] * len(matches)
-        values = matches["RIC"].astype(str).tolist()
+        values = matches[id_col].astype(str).tolist()
         # For selectize, dict keys are the *values* sent to server; dict values are labels shown to user.
         choices = dict(zip(values, labels))
 
         selected = _safe_input("company_choice", "")
         if selected not in set(values):
-            # If the query is an exact RIC match, auto-select it; else leave empty.
+            # If the query is an exact ID match, auto-select it; else leave empty.
             if q_upper in set(v.upper() for v in values):
                 # pick the first exact match (case-insensitive)
                 for v in values:
@@ -954,9 +975,10 @@ def server(input, output, session):
     def plot_top5_sectors():
         d = DF.copy()
         label_col, labels = _time_series_labels(d)
+        sector_col = _sector_col(d)
         if (
             "mcap_eur" not in d.columns
-            or "trbc_sector" not in d.columns
+            or not sector_col
             or d.empty
             or not label_col
             or not labels
@@ -966,23 +988,23 @@ def server(input, output, session):
             fig.update_xaxes(visible=False)
             fig.update_yaxes(visible=False)
             return fig
-        total_by_sector = d.groupby("trbc_sector")["mcap_eur"].sum().sort_values(ascending=False)
+        total_by_sector = d.groupby(sector_col)["mcap_eur"].sum().sort_values(ascending=False)
         top5 = total_by_sector.head(5).index.tolist()
         by_q_sector = (
-            d.groupby([label_col, "trbc_sector"])["mcap_eur"]
+            d.groupby([label_col, sector_col])["mcap_eur"]
             .sum()
             .reset_index()
         )
         total_by_q = d.groupby(label_col)["mcap_eur"].sum().reset_index()
         by_q_sector = by_q_sector.merge(total_by_q, on=label_col, suffixes=("", "_total"))
         by_q_sector["share"] = (by_q_sector["mcap_eur"] / by_q_sector["mcap_eur_total"]) * 100
-        by_q_sector = by_q_sector[by_q_sector["trbc_sector"].isin(top5)]
+        by_q_sector = by_q_sector[by_q_sector[sector_col].isin(top5)]
         by_q_sector[label_col] = by_q_sector[label_col].astype(str)
         fig = px.line(
             by_q_sector,
             x=label_col,
             y="share",
-            color="trbc_sector",
+            color=sector_col,
         )
         fig.update_layout(
             xaxis_title="Year",
@@ -1085,8 +1107,8 @@ def server(input, output, session):
         if page.get() != "company":
             return px.bar()
 
-        ric = str(_safe_input("company_choice", "")).strip()
-        if ric == "":
+        company_id = str(_safe_input("company_choice", "")).strip()
+        if company_id == "":
             fig = px.bar()
             fig.add_annotation(text="Search and select a company to see the chart.", x=0.5, y=0.5, showarrow=False)
             fig.update_xaxes(visible=False)
@@ -1102,7 +1124,15 @@ def server(input, output, session):
             fig.update_yaxes(visible=False)
             return fig
 
-        d = DF.loc[DF["RIC"].astype(str) == ric].copy()
+        id_col = _company_id_col(DF)
+        if not id_col:
+            fig = px.bar()
+            fig.add_annotation(text="No company ID column found (expected ISIN/isin/RIC).", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d = DF.loc[DF[id_col].astype(str) == company_id].copy()
         if d.empty:
             fig = px.bar()
             fig.add_annotation(text="No data found for selected company.", x=0.5, y=0.5, showarrow=False)
@@ -1176,8 +1206,8 @@ def server(input, output, session):
         if page.get() != "company":
             return px.line()
 
-        ric = str(_safe_input("company_choice", "")).strip()
-        if ric == "":
+        company_id = str(_safe_input("company_choice", "")).strip()
+        if company_id == "":
             fig = px.line()
             fig.add_annotation(text="Search and select a company to see the chart.", x=0.5, y=0.5, showarrow=False)
             fig.update_xaxes(visible=False)
@@ -1200,7 +1230,15 @@ def server(input, output, session):
             fig.update_yaxes(visible=False)
             return fig
 
-        d = DF.loc[DF["RIC"].astype(str) == ric].copy()
+        id_col = _company_id_col(DF)
+        if not id_col:
+            fig = px.line()
+            fig.add_annotation(text="No company ID column found (expected ISIN/isin/RIC).", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d = DF.loc[DF[id_col].astype(str) == company_id].copy()
         if d.empty:
             fig = px.line()
             fig.add_annotation(text="No data found for selected company.", x=0.5, y=0.5, showarrow=False)
