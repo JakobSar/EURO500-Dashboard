@@ -87,7 +87,7 @@ app_ui = ui.page_fluid(
     ui.tags.script(
         """
         (function () {
-          const LABEL = "Market Cap (EUR)";
+          const LABEL = "Market Cap (EUR mio.)";
           const TIP = "Reporting Price: Close (day before quarter start)";
           const formatNumber = new Intl.NumberFormat("en-US", {
             maximumFractionDigits: 0,
@@ -131,7 +131,7 @@ app_ui = ui.page_fluid(
                 if (dots > 1) cleaned = cleaned.replace(/\\./g, "");
                 const numeric = parseFloat(cleaned);
                 if (Number.isFinite(numeric)) {
-                  const formatted = `€ ${formatNumber.format(Math.round(numeric))}`;
+                  const formatted = `€ ${formatNumber.format(Math.round(numeric))} mio.`;
                   if (cell.textContent !== formatted) cell.textContent = formatted;
                 }
               });
@@ -212,9 +212,24 @@ app_ui = ui.page_fluid(
         }
         shiny-data-frame#tbl .shiny-data-grid > table > thead > tr > th:first-child,
         shiny-data-frame#tbl .shiny-data-grid > table > tbody > tr > td:first-child {
-          width: 100px !important;
-          min-width: 100px !important;
-          max-width: 100px !important;
+          width: 280px !important;
+          min-width: 280px !important;
+          max-width: 280px !important;
+        }
+        shiny-data-frame#tbl .shiny-data-grid > table > thead > tr > th:first-child {
+          white-space: nowrap;
+        }
+        shiny-data-frame#tbl .shiny-data-grid > table > tbody > tr > td:first-child {
+          white-space: normal !important;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+          line-height: 1.25;
+        }
+        shiny-data-frame#tbl .shiny-data-grid > table > thead > tr > th:nth-child(2),
+        shiny-data-frame#tbl .shiny-data-grid > table > tbody > tr > td:nth-child(2) {
+          width: 130px !important;
+          min-width: 130px !important;
+          max-width: 130px !important;
           white-space: nowrap;
         }
         .card-header { background: var(--accent-soft); border-bottom: 1px solid var(--stroke); font-weight: 600; }
@@ -256,8 +271,6 @@ app_ui = ui.page_fluid(
             ui.hr(),
             ui.input_action_button("toggle_company", "Explore by Company"),
             ui.hr(),
-            ui.p("Data Source:", class_="muted tight-label"),
-            ui.span("LSEG Datastream", class_="tight-value"),
             ui.p("Created by:", class_="muted tight-label"),
             ui.tags.span("Jakob Sarrazin", class_="tight-value", title="jakob.sarrazin@students.uni-mannheim.de"),
             width=320,
@@ -423,7 +436,7 @@ def server(input, output, session):
         n = int(d["RIC"].nunique()) if ("RIC" in d.columns) else 0
         return ui.div(
             ui.div(f"{n:,}".replace(",", "."), class_="vb-number"),
-            ui.div("unique RICs", class_="vb-label"),
+            ui.div("unique companies", class_="vb-label"),
         )
 
     @render.ui
@@ -443,7 +456,7 @@ def server(input, output, session):
         n = int(d[col].nunique()) if col else 0
         return ui.div(
             ui.div(f"{n:,}".replace(",", "."), class_="vb-number"),
-            ui.div("TRBC sectors", class_="vb-label"),
+            ui.div("Economic sectors", class_="vb-label"),
         )
 
     @render.ui
@@ -529,22 +542,23 @@ def server(input, output, session):
     def tbl():
         d = filtered()
         d = d.drop(
-            columns=["date", "year", "q_year", "q_num", "q_label", "hq_code", "trbc_sector_code"],
+            columns=["date", "year", "q_year", "q_num", "q_label", "hq_code", "trbc_sector_code", "RIC"],
             errors="ignore",
         )
+        if "mcap_eur" in d.columns:
+            d["mcap_eur"] = pd.to_numeric(d["mcap_eur"], errors="coerce") / 1e6
         if "rank_mcap" in d.columns:
             d["rank_mcap"] = d["rank_mcap"].map(
                 lambda x: str(int(x)) if pd.notna(x) else ""
             )
         rename_map = {
-            "RIC": "RIC",
             "name": "Company",
             "hq_country": "HQ Country",
-            "trbc_sector": "TRBC Sector",
-            "mcap_eur": "Market Cap (EUR)",
+            "trbc_sector": "Economic Sector",
+            "mcap_eur": "Market Cap (EUR mio.)",
             "rank_mcap": "Rank",
         }
-        preferred_order = ["RIC", "name", "hq_country", "trbc_sector", "mcap_eur", "rank_mcap"]
+        preferred_order = ["name", "hq_country", "trbc_sector", "mcap_eur", "rank_mcap"]
         ordered_cols = [c for c in preferred_order if c in d.columns]
         if ordered_cols:
             d = d[ordered_cols]
@@ -649,11 +663,11 @@ def server(input, output, session):
 
         matches = matches.sort_values(["_rank", "_name_sort", "RIC"], kind="mergesort").head(50)
 
-        # Display "RIC — Name" but use RIC as the value
+        # Show company names only in the UI; keep RIC as the internal value.
         if "name" in matches.columns:
-            labels = (matches["RIC"].astype(str) + " — " + matches["name"].astype(str)).tolist()
+            labels = matches["name"].astype(str).tolist()
         else:
-            labels = matches["RIC"].astype(str).tolist()
+            labels = ["Unnamed company"] * len(matches)
         values = matches["RIC"].astype(str).tolist()
         # For selectize, dict keys are the *values* sent to server; dict values are labels shown to user.
         choices = dict(zip(values, labels))
@@ -687,7 +701,7 @@ def server(input, output, session):
                                 "Search",
                                 value="",
                                 width="100%",
-                                placeholder="Type a RIC (e.g., SAPG.DE) or company name",
+                                placeholder="Type a company name",
                             ),
                         ),
                         ui.column(
@@ -768,7 +782,7 @@ def server(input, output, session):
                     ui.column(
                         3,
                         ui.card(
-                        ui.h6("Unique Companies", class_="card-title"),
+                        ui.h6("Companies", class_="card-title"),
                             ui.output_ui("vb_firms"),
                         ),
                     ),
@@ -1091,7 +1105,7 @@ def server(input, output, session):
         d = DF.loc[DF["RIC"].astype(str) == ric].copy()
         if d.empty:
             fig = px.bar()
-            fig.add_annotation(text=f"No data found for RIC: {ric}", x=0.5, y=0.5, showarrow=False)
+            fig.add_annotation(text="No data found for selected company.", x=0.5, y=0.5, showarrow=False)
             fig.update_xaxes(visible=False)
             fig.update_yaxes(visible=False)
             return fig
@@ -1189,7 +1203,7 @@ def server(input, output, session):
         d = DF.loc[DF["RIC"].astype(str) == ric].copy()
         if d.empty:
             fig = px.line()
-            fig.add_annotation(text=f"No data found for RIC: {ric}", x=0.5, y=0.5, showarrow=False)
+            fig.add_annotation(text="No data found for selected company.", x=0.5, y=0.5, showarrow=False)
             fig.update_xaxes(visible=False)
             fig.update_yaxes(visible=False)
             return fig
