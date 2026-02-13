@@ -12,7 +12,7 @@ import plotly.express as px
 # Expected input:
 # Quarterly Euro500 constituents panel with at least:
 # - date (datetime): quarter-end formation date
-# - RIC
+# - firm_id (preferred stable identifier), or other company ID columns
 #
 # Optional (used if available):
 # name, hq_country, hq_code, sector, trbc_sector, trbc_sector_code, mcap_eur, rank_mcap
@@ -62,7 +62,7 @@ def load_euro500_data() -> pd.DataFrame:
     df["q_label"] = df["q_year"].astype(int).astype(str) + "Q" + df["q_num"].astype(int).astype(str)
 
     preferred = [
-        "date", "year", "RIC", "name",
+        "date", "year", "firm_id", "name",
         "hq_country", "hq_code",
         "sector", "trbc_sector", "trbc_sector_code",
         "mcap_eur", "rank_mcap",
@@ -256,7 +256,7 @@ app_ui = ui.page_fluid(
                 "year",
                 "Year",
                 choices=[str(y) for y in YEARS],
-                selected="2026" if 2026 in YEARS else (str(YEARS[0]) if YEARS else None),
+                selected=str(YEARS[-1]) if YEARS else None,
             ),
 
             ui.input_selectize(
@@ -266,6 +266,7 @@ app_ui = ui.page_fluid(
                 multiple=False,
                 options={"placeholder": "All quarters in selected year"},
             ),
+            ui.output_ui("back_to_main_btn"),
             ui.hr(),
             ui.input_action_button("toggle_view", "Explore Time Variation"),
             ui.hr(),
@@ -301,10 +302,24 @@ def server(input, output, session):
         return None
 
     def _company_id_col(d: pd.DataFrame) -> str | None:
-        return _first_existing_col(d, ["ISIN", "isin", "RIC"])
+        return _first_existing_col(d, ["firm_id", "FirmID", "FIRM_ID", "ISIN", "isin"])
 
     def _sector_col(d: pd.DataFrame) -> str | None:
         return _first_existing_col(d, ["sector", "trbc_sector", "trbc_sector_code"])
+
+    def _latest_quarter_label(d: pd.DataFrame) -> str:
+        if d is None or d.empty:
+            return ""
+        dd = d.copy()
+        dd["date"] = pd.to_datetime(dd["date"], errors="coerce")
+        dd = dd.loc[dd["date"].notna()].copy()
+        if dd.empty:
+            return ""
+        latest_date = dd["date"].max()
+        latest_rows = dd.loc[dd["date"] == latest_date].copy()
+        if "q_label" in latest_rows.columns and latest_rows["q_label"].notna().any():
+            return str(latest_rows["q_label"].dropna().astype(str).iloc[0])
+        return str(latest_date.to_period("Q"))
 
     @reactive.effect
     @reactive.event(input.toggle_view)
@@ -314,6 +329,12 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.go_home)
     def _go_home():
+        page.set("main")
+        show_time.set(False)
+
+    @reactive.effect
+    @reactive.event(input.go_home_sidebar)
+    def _go_home_sidebar():
         page.set("main")
         show_time.set(False)
 
@@ -348,11 +369,9 @@ def server(input, output, session):
                 .unique()
                 .tolist()
             )
-        # Default to Q1 2026 if available, otherwise first quarter in the list
-        if "2026Q1" in qlabels:
-            default_q = "2026Q1"
-        else:
-            default_q = qlabels[0] if qlabels else ""
+        default_q = _latest_quarter_label(d)
+        if default_q and default_q not in qlabels:
+            default_q = qlabels[-1] if qlabels else ""
         ui.update_selectize("quarter", choices=qlabels, selected=default_q)
 
     # ---- Main filtered data ----
@@ -363,13 +382,13 @@ def server(input, output, session):
             if DF is None or DF.empty or "year" not in DF.columns:
                 return pd.DataFrame()
 
+            year_col = "q_year" if "q_year" in DF.columns else "year"
             y = input.year()
             if y is None or str(y).strip() == "":
-                y_int = int(DF["year"].min())
+                y_int = int(DF[year_col].max())
             else:
                 y_int = int(y)
 
-            year_col = "q_year" if "q_year" in DF.columns else "year"
             d = DF.loc[DF[year_col] == y_int].copy()
 
             q = input.quarter()
@@ -380,14 +399,14 @@ def server(input, output, session):
                     dq = pd.to_datetime(d["date"], errors="coerce").dt.to_period("Q").astype(str)
                     d = d.loc[dq == str(q)].copy()
             else:
-                # If no quarter selected, default to Q1 2026 if present, otherwise first quarter
-                if "q_label" in d.columns and not d.empty:
-                    qlabels = d["q_label"].sort_values().astype(str).tolist()
-                    if "2026Q1" in qlabels:
-                        default_q = "2026Q1"
+                # If no quarter selected, default to the latest available quarter
+                default_q = _latest_quarter_label(d)
+                if default_q:
+                    if "q_label" in d.columns:
+                        d = d.loc[d["q_label"].astype(str) == str(default_q)].copy()
                     else:
-                        default_q = qlabels[0]
-                    d = d.loc[d["q_label"].astype(str) == str(default_q)].copy()
+                        dq = pd.to_datetime(d["date"], errors="coerce").dt.to_period("Q").astype(str)
+                        d = d.loc[dq == str(default_q)].copy()
 
             # Sort
             sort_cols = []
@@ -395,7 +414,10 @@ def server(input, output, session):
 
             if "date" in d.columns:
                 sort_cols.append("date"); asc.append(False)
-            if "mcap_eur" in d.columns:
+            if "rank_mcap" in d.columns:
+                d["rank_mcap"] = pd.to_numeric(d["rank_mcap"], errors="coerce")
+                sort_cols.append("rank_mcap"); asc.append(True)
+            elif "mcap_eur" in d.columns:
                 sort_cols.append("mcap_eur"); asc.append(False)
             id_col = _company_id_col(d)
             if id_col:
@@ -425,6 +447,12 @@ def server(input, output, session):
             )
         except Exception as e:
             return f"debug error: {repr(e)}"
+
+    @render.ui
+    def back_to_main_btn():
+        if page.get() == "company" or show_time.get():
+            return ui.input_action_button("go_home_sidebar", "Back to Main Page", class_="btn-primary w-100")
+        return None
 
     # ---- Value boxes (never blank) ----
     @render.ui
@@ -556,7 +584,7 @@ def server(input, output, session):
     def tbl():
         d = filtered()
         d = d.drop(
-            columns=["date", "year", "q_year", "q_num", "q_label", "hq_code", "trbc_sector_code", "RIC", "ISIN", "isin"],
+            columns=["date", "year", "q_year", "q_num", "q_label", "hq_code", "trbc_sector_code", "firm_id", "FirmID", "FIRM_ID", "ISIN", "isin"],
             errors="ignore",
         )
         if "mcap_eur" in d.columns:
@@ -614,26 +642,84 @@ def server(input, output, session):
         except Exception:
             return default
 
+    def _series_clean_str(d: pd.DataFrame, col: str) -> pd.Series:
+        if col not in d.columns:
+            return pd.Series([""] * len(d), index=d.index, dtype="object")
+        return d[col].fillna("").astype(str).str.strip()
+
+    def _with_company_key(d: pd.DataFrame) -> pd.DataFrame:
+        if d is None or d.empty:
+            dd = d.copy() if isinstance(d, pd.DataFrame) else pd.DataFrame()
+            dd["_company_key"] = ""
+            return dd
+
+        dd = d.copy()
+        fid_col = _first_existing_col(dd, ["firm_id", "FirmID", "FIRM_ID"])
+        isin_col = _first_existing_col(dd, ["ISIN", "isin"])
+
+        fid = _series_clean_str(dd, fid_col) if fid_col else pd.Series([""] * len(dd), index=dd.index, dtype="object")
+        isin = _series_clean_str(dd, isin_col) if isin_col else pd.Series([""] * len(dd), index=dd.index, dtype="object")
+        name = _series_clean_str(dd, "name")
+        hq = _series_clean_str(dd, "hq_code")
+
+        # Prefer firm_id as stable entity key; fall back to ISIN, then name(+hq).
+        key = fid.copy()
+        key = key.where(key != "", isin)
+        name_fallback = name.where(hq == "", name + " | " + hq)
+        key = key.where(key != "", name_fallback)
+        dd["_company_key"] = key
+        return dd
+
     @reactive.calc
     def _company_df() -> pd.DataFrame:
-        company_id = str(_safe_input("company_choice", "")).strip()
-        id_col = _company_id_col(DF)
-        if company_id == "" or not id_col:
+        company_key = str(_safe_input("company_choice", "")).strip()
+        if company_key == "":
             return pd.DataFrame()
-        return DF.loc[DF[id_col].astype(str) == company_id].copy()
+        d = _with_company_key(DF)
+        if "_company_key" not in d.columns:
+            return pd.DataFrame()
+        return d.loc[d["_company_key"].astype(str) == company_key].copy()
 
     @reactive.calc
     def _companies_master() -> pd.DataFrame:
-        id_col = _company_id_col(DF)
-        if not id_col:
+        d = _with_company_key(DF)
+        if d.empty or "_company_key" not in d.columns:
             return pd.DataFrame()
-        cols = [id_col] + (["name"] if "name" in DF.columns else [])
-        d = DF.loc[:, [c for c in cols if c in DF.columns]].drop_duplicates().copy()
-        if id_col in d.columns:
-            d[id_col] = d[id_col].astype(str)
+
+        d["_company_key"] = d["_company_key"].astype(str).str.strip()
+        d = d.loc[d["_company_key"] != ""].copy()
+        if d.empty:
+            return pd.DataFrame()
+
+        if "date" in d.columns:
+            d["_sort_date"] = pd.to_datetime(d["date"], errors="coerce")
+            d = d.sort_values("_sort_date", kind="mergesort")
+        else:
+            d["_sort_date"] = pd.NaT
+
         if "name" in d.columns:
-            d["name"] = d["name"].astype(str)
-        return d
+            d["_display_name"] = _series_clean_str(d, "name")
+        else:
+            d["_display_name"] = ""
+
+        d["_display_name"] = d["_display_name"].where(d["_display_name"] != "", d["_company_key"])
+
+        fid_col = _first_existing_col(d, ["firm_id", "FirmID", "FIRM_ID"])
+        isin_col = _first_existing_col(d, ["ISIN", "isin"])
+        d["_firm_id"] = _series_clean_str(d, fid_col) if fid_col else ""
+        d["_isin"] = _series_clean_str(d, isin_col) if isin_col else ""
+
+        master = d.groupby("_company_key", as_index=False).tail(1).copy()
+        master["_search_blob"] = (
+            master["_company_key"].astype(str).str.upper()
+            + " "
+            + master["_display_name"].astype(str).str.upper()
+            + " "
+            + master["_firm_id"].astype(str).str.upper()
+            + " "
+            + master["_isin"].astype(str).str.upper()
+        )
+        return master[["_company_key", "_display_name", "_firm_id", "_isin", "_search_blob"]]
 
     @reactive.effect
     def _update_company_choices():
@@ -646,50 +732,47 @@ def server(input, output, session):
             return
 
         master = _companies_master()
-        id_col = _company_id_col(master)
-        if master.empty or not id_col:
+        if master.empty:
             ui.update_selectize("company_choice", choices=[], selected=[])
             return
 
         q_upper = q.upper()
-        ids = master[id_col].fillna("").astype(str)
-        if "name" in master.columns:
-            nm = master["name"].fillna("").astype(str)
-        else:
-            nm = pd.Series([""] * len(master), index=master.index)
+        blob = master["_search_blob"].fillna("").astype(str)
 
-        # Ranking: exact ID > ID startswith > contains in ID/name
-        exact_id = ids.str.upper().eq(q_upper)
-        starts_id = ids.str.upper().str.startswith(q_upper)
-        contains_any = ids.str.upper().str.contains(q_upper, na=False) | nm.str.upper().str.contains(q_upper, na=False)
+        # Ranking: exact key/firm_id/isin > startswith > contains in any searchable field.
+        contains_any = blob.str.contains(q_upper, na=False, regex=False)
 
         matches = master.loc[contains_any].copy()
         if matches.empty:
             ui.update_selectize("company_choice", choices=[], selected=[])
             return
 
-        m_id = matches[id_col].astype(str)
-        m_nm = matches["name"].astype(str) if "name" in matches.columns else pd.Series([""] * len(matches), index=matches.index)
+        m_fid = matches["_firm_id"].astype(str)
+        m_key = matches["_company_key"].astype(str)
+        m_nm = matches["_display_name"].astype(str)
+        m_isin = matches["_isin"].astype(str)
 
-        m_exact = m_id.str.upper().eq(q_upper)
-        m_starts = m_id.str.upper().str.startswith(q_upper)
+        m_exact = (
+            m_key.str.upper().eq(q_upper)
+            | m_fid.str.upper().eq(q_upper)
+            | m_isin.str.upper().eq(q_upper)
+        )
+        m_starts = (
+            m_key.str.upper().str.startswith(q_upper)
+            | m_fid.str.upper().str.startswith(q_upper)
+            | m_isin.str.upper().str.startswith(q_upper)
+        )
         matches["_rank"] = (
             m_exact.map({True: 0, False: 1}).astype(int) * 100
             + m_starts.map({True: 0, False: 1}).astype(int) * 10
         )
-        if "name" in matches.columns:
-            matches["_name_sort"] = m_nm.str.upper()
-        else:
-            matches["_name_sort"] = ""
+        matches["_name_sort"] = m_nm.str.upper()
 
-        matches = matches.sort_values(["_rank", "_name_sort", id_col], kind="mergesort").head(50)
+        matches = matches.sort_values(["_rank", "_name_sort", "_company_key"], kind="mergesort").head(50)
 
-        # Show company names only in the UI; keep ID as the internal value.
-        if "name" in matches.columns:
-            labels = matches["name"].astype(str).tolist()
-        else:
-            labels = ["Unnamed company"] * len(matches)
-        values = matches[id_col].astype(str).tolist()
+        # Show company names only in the UI; keep stable company key as internal value.
+        labels = matches["_display_name"].astype(str).tolist()
+        values = matches["_company_key"].astype(str).tolist()
         # For selectize, dict keys are the *values* sent to server; dict values are labels shown to user.
         choices = dict(zip(values, labels))
 
@@ -1107,8 +1190,8 @@ def server(input, output, session):
         if page.get() != "company":
             return px.bar()
 
-        company_id = str(_safe_input("company_choice", "")).strip()
-        if company_id == "":
+        company_key = str(_safe_input("company_choice", "")).strip()
+        if company_key == "":
             fig = px.bar()
             fig.add_annotation(text="Search and select a company to see the chart.", x=0.5, y=0.5, showarrow=False)
             fig.update_xaxes(visible=False)
@@ -1124,15 +1207,7 @@ def server(input, output, session):
             fig.update_yaxes(visible=False)
             return fig
 
-        id_col = _company_id_col(DF)
-        if not id_col:
-            fig = px.bar()
-            fig.add_annotation(text="No company ID column found (expected ISIN/isin/RIC).", x=0.5, y=0.5, showarrow=False)
-            fig.update_xaxes(visible=False)
-            fig.update_yaxes(visible=False)
-            return fig
-
-        d = DF.loc[DF[id_col].astype(str) == company_id].copy()
+        d = _company_df().copy()
         if d.empty:
             fig = px.bar()
             fig.add_annotation(text="No data found for selected company.", x=0.5, y=0.5, showarrow=False)
@@ -1206,8 +1281,8 @@ def server(input, output, session):
         if page.get() != "company":
             return px.line()
 
-        company_id = str(_safe_input("company_choice", "")).strip()
-        if company_id == "":
+        company_key = str(_safe_input("company_choice", "")).strip()
+        if company_key == "":
             fig = px.line()
             fig.add_annotation(text="Search and select a company to see the chart.", x=0.5, y=0.5, showarrow=False)
             fig.update_xaxes(visible=False)
@@ -1230,15 +1305,7 @@ def server(input, output, session):
             fig.update_yaxes(visible=False)
             return fig
 
-        id_col = _company_id_col(DF)
-        if not id_col:
-            fig = px.line()
-            fig.add_annotation(text="No company ID column found (expected ISIN/isin/RIC).", x=0.5, y=0.5, showarrow=False)
-            fig.update_xaxes(visible=False)
-            fig.update_yaxes(visible=False)
-            return fig
-
-        d = DF.loc[DF[id_col].astype(str) == company_id].copy()
+        d = _company_df().copy()
         if d.empty:
             fig = px.line()
             fig.add_annotation(text="No data found for selected company.", x=0.5, y=0.5, showarrow=False)
