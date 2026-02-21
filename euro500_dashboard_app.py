@@ -245,7 +245,7 @@ app_ui = ui.page_fluid(
         class_="app-title fw-bold",
     ),
     ui.p(
-        "A snapshot of the Euro500 equity universe: the 500 largest non‑financial companies by market cap headquartered in the euro area.",
+        "A snapshot of the Euro500 equity universe: The 500 largest euro-area headquartered, non-financial public primary equities (ordinary/common/registered/voting shares and preference shares), ranked by point-in-time market capitalization at each quarterly formation date.",
         class_="muted",
     ),
     ui.layout_sidebar(
