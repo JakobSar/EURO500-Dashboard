@@ -324,7 +324,7 @@ app_ui = ui.page_fluid(
         class_="app-title fw-bold",
     ),
     ui.p(
-        "A snapshot of the Euro500 equity universe: The 500 largest euro-area headquartered, non-financial public primary equities (ordinary/common/registered/voting shares and preference shares), ranked by point-in-time market capitalization at each quarterly formation date.",
+        "A snapshot of the Euro500 equity universe: The 500 largest euro-area headquartered, public primary equities (ordinary/common/registered/voting shares and preference shares), ranked by point-in-time market capitalization at each quarterly formation date.",
         class_="muted",
     ),
     ui.layout_sidebar(
@@ -1417,6 +1417,46 @@ def server(input, output, session):
             ),
                 ),
             ),
+            ui.row(
+                ui.column(
+                    6,
+            ui.card(
+                ui.card_header("Joiners/Leavers per Quarter"),
+                output_widget("plot_joiner_leaver_time", width="100%", height="360px"),
+                class_="plot-card",
+                full_screen=False,
+            ),
+                ),
+                ui.column(
+                    6,
+            ui.card(
+                ui.card_header("Average Tenure of Leavers (Quarters)"),
+                output_widget("plot_leaver_tenure_time", width="100%", height="360px"),
+                class_="plot-card",
+                full_screen=False,
+            ),
+                ),
+            ),
+            ui.row(
+                ui.column(
+                    6,
+            ui.card(
+                ui.card_header("Index Concentration — Top 10 / Top 50 (Market Cap Share)"),
+                output_widget("plot_concentration_topn_time", width="100%", height="360px"),
+                class_="plot-card",
+                full_screen=False,
+            ),
+                ),
+                ui.column(
+                    6,
+            ui.card(
+                ui.card_header("Index Concentration — HHI (Market Cap Weights)"),
+                output_widget("plot_concentration_hhi_time", width="100%", height="360px"),
+                class_="plot-card",
+                full_screen=False,
+            ),
+                ),
+            ),
             class_="main-stack",
         )
 
@@ -1824,6 +1864,325 @@ def server(input, output, session):
         fig.update_traces(
             hovertemplate="Year: %{x}<br>Country: %{fullData.name}<br>Index Share: %{y:.1f}%<extra></extra>"
         )
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    @render_widget
+    def plot_joiner_leaver_time():
+        d = _with_company_key(DF.copy())
+        label_col, labels = _time_series_labels(d)
+        if (
+            "_company_key" not in d.columns
+            or d.empty
+            or not label_col
+            or not labels
+        ):
+            fig = px.bar()
+            fig.add_annotation(text="No company data available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d["_company_key"] = d["_company_key"].fillna("").astype(str).str.strip()
+        d = d.loc[d["_company_key"] != ""].copy()
+        if d.empty:
+            fig = px.bar()
+            fig.add_annotation(text="No company IDs available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        by_q = d.groupby(label_col)["_company_key"].agg(lambda s: set(s.dropna().tolist()))
+        records = []
+        prev_set: set[str] = set()
+        for lbl in labels:
+            cur_set = by_q.get(lbl, set())
+            joiners = len(cur_set - prev_set) if prev_set else 0
+            leavers = len(prev_set - cur_set) if prev_set else 0
+            records.append(
+                {
+                    label_col: str(lbl),
+                    "count": joiners,  # equals leavers by index construction
+                    "leavers": leavers,
+                }
+            )
+            prev_set = cur_set
+
+        plot_df = pd.DataFrame(records)
+        fig = px.bar(
+            plot_df,
+            x=label_col,
+            y="count",
+            color_discrete_sequence=["#0ea5a4"],
+        )
+        fig.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Joiners (= Leavers)",
+            margin=dict(l=60, r=20, t=10, b=60),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            hovermode="x unified",
+            legend_title_text="",
+            showlegend=False,
+            autosize=True,
+        )
+        tickvals, ticktext = _five_year_ticks(labels)
+        if tickvals:
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        fig.update_xaxes(showgrid=False, type="category")
+        fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb")
+        fig.update_traces(hovertemplate="Quarter: %{x}<br>Joiners/Leavers: %{y}<extra></extra>")
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    @render_widget
+    def plot_leaver_tenure_time():
+        d = _with_company_key(DF.copy())
+        label_col, labels = _time_series_labels(d)
+        if (
+            "_company_key" not in d.columns
+            or d.empty
+            or not label_col
+            or not labels
+        ):
+            fig = px.line()
+            fig.add_annotation(text="No company data available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d["_company_key"] = d["_company_key"].fillna("").astype(str).str.strip()
+        d = d.loc[d["_company_key"] != ""].copy()
+        if d.empty:
+            fig = px.line()
+            fig.add_annotation(text="No company IDs available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        by_q = d.groupby(label_col)["_company_key"].agg(lambda s: set(s.dropna().tolist()))
+        records = []
+        prev_set: set[str] = set()
+        prev_streak: dict[str, int] = {}
+
+        for idx, lbl in enumerate(labels):
+            cur_set = by_q.get(lbl, set())
+            if idx == 0:
+                records.append({label_col: str(lbl), "avg_tenure_q": 0.0, "n_leavers": 0})
+                prev_streak = {k: 1 for k in cur_set}
+                prev_set = cur_set
+                continue
+
+            leavers = prev_set - cur_set
+            tenures = [float(prev_streak.get(k, 0)) for k in leavers if prev_streak.get(k, 0) > 0]
+            avg_tenure = float(pd.Series(tenures).mean()) if tenures else 0.0
+            records.append({label_col: str(lbl), "avg_tenure_q": avg_tenure, "n_leavers": len(leavers)})
+
+            cur_streak: dict[str, int] = {}
+            for k in cur_set:
+                cur_streak[k] = prev_streak.get(k, 0) + 1 if k in prev_set else 1
+            prev_streak = cur_streak
+            prev_set = cur_set
+
+        plot_df = pd.DataFrame(records)
+        fig = px.line(
+            plot_df,
+            x=label_col,
+            y="avg_tenure_q",
+            markers=True,
+        )
+        fig.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Average tenure (quarters)",
+            margin=dict(l=60, r=20, t=10, b=60),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            hovermode="x unified",
+            autosize=True,
+            showlegend=False,
+        )
+        fig.update_traces(
+            line=dict(color="#9333ea", width=3),
+            marker=dict(size=6),
+            hovertemplate="Quarter: %{x}<br>Avg tenure: %{y:.2f} quarters<extra></extra>",
+        )
+        tickvals, ticktext = _five_year_ticks(labels)
+        if tickvals:
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        fig.update_xaxes(showgrid=False, type="category")
+        fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb", rangemode="tozero")
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    @render_widget
+    def plot_concentration_topn_time():
+        d = _with_company_key(DF.copy())
+        label_col, labels = _time_series_labels(d)
+        if (
+            "_company_key" not in d.columns
+            or "mcap_eur" not in d.columns
+            or d.empty
+            or not label_col
+            or not labels
+        ):
+            fig = px.line()
+            fig.add_annotation(text="No market cap data available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d["_company_key"] = d["_company_key"].fillna("").astype(str).str.strip()
+        d["mcap_eur"] = pd.to_numeric(d["mcap_eur"], errors="coerce")
+        d = d.loc[(d["_company_key"] != "") & d["mcap_eur"].notna()].copy()
+        if d.empty:
+            fig = px.line()
+            fig.add_annotation(text="No valid company market caps available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d_agg = (
+            d.groupby([label_col, "_company_key"], as_index=False)["mcap_eur"]
+            .max()
+        )
+
+        records = []
+        for lbl in labels:
+            s = d_agg.loc[d_agg[label_col].astype(str) == str(lbl), "mcap_eur"].sort_values(ascending=False)
+            if s.empty:
+                top10_share = 0.0
+                top50_share = 0.0
+            else:
+                total = float(s.sum())
+                top10_share = (float(s.head(10).sum()) / total) * 100 if total > 0 else 0.0
+                top50_share = (float(s.head(50).sum()) / total) * 100 if total > 0 else 0.0
+            records.append({label_col: str(lbl), "series": "Top 10", "share": top10_share})
+            records.append({label_col: str(lbl), "series": "Top 50", "share": top50_share})
+
+        plot_df = pd.DataFrame(records)
+        fig = px.line(
+            plot_df,
+            x=label_col,
+            y="share",
+            color="series",
+            markers=False,
+            color_discrete_map={"Top 10": "#1d4ed8", "Top 50": "#0ea5a4"},
+            category_orders={"series": ["Top 10", "Top 50"]},
+        )
+        fig.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Market cap share of index (%)",
+            margin=dict(l=60, r=20, t=10, b=60),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            hovermode="x unified",
+            legend_title_text="",
+            legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0, font=dict(size=12)),
+            legend_font_size=12,
+            autosize=True,
+        )
+        fig.update_traces(hovertemplate="Quarter: %{x}<br>%{fullData.name}: %{y:.1f}%<extra></extra>")
+        tickvals, ticktext = _five_year_ticks(labels)
+        if tickvals:
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        fig.update_xaxes(showgrid=False, type="category")
+        fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb")
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    @render_widget
+    def plot_concentration_hhi_time():
+        d = _with_company_key(DF.copy())
+        label_col, labels = _time_series_labels(d)
+        if (
+            "_company_key" not in d.columns
+            or "mcap_eur" not in d.columns
+            or d.empty
+            or not label_col
+            or not labels
+        ):
+            fig = px.line()
+            fig.add_annotation(text="No market cap data available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d["_company_key"] = d["_company_key"].fillna("").astype(str).str.strip()
+        d["mcap_eur"] = pd.to_numeric(d["mcap_eur"], errors="coerce")
+        d = d.loc[(d["_company_key"] != "") & d["mcap_eur"].notna()].copy()
+        if d.empty:
+            fig = px.line()
+            fig.add_annotation(text="No valid company market caps available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d_agg = d.groupby([label_col, "_company_key"], as_index=False)["mcap_eur"].max()
+        records = []
+        for lbl in labels:
+            s = d_agg.loc[d_agg[label_col].astype(str) == str(lbl), "mcap_eur"]
+            total = float(s.sum()) if not s.empty else 0.0
+            if total > 0:
+                w = s / total
+                hhi_points = float((w.pow(2).sum()) * 10000.0)
+            else:
+                hhi_points = 0.0
+            records.append({label_col: str(lbl), "hhi": hhi_points})
+
+        plot_df = pd.DataFrame(records)
+        fig = px.line(plot_df, x=label_col, y="hhi", markers=True)
+        fig.update_layout(
+            xaxis_title="Year",
+            yaxis_title="HHI (0-10,000)",
+            margin=dict(l=60, r=20, t=10, b=60),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            hovermode="x unified",
+            autosize=True,
+            showlegend=False,
+        )
+        fig.update_traces(
+            line=dict(color="#111827", width=3),
+            marker=dict(size=6, color="#111827"),
+            hovertemplate="Quarter: %{x}<br>HHI: %{y:.0f}<extra></extra>",
+        )
+        tickvals, ticktext = _five_year_ticks(labels)
+        if tickvals:
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        fig.update_xaxes(showgrid=False, type="category")
+        fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb", rangemode="tozero")
         fig.update_layout(
             dragmode=False,
             modebar_remove=[
