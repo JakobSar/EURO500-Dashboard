@@ -4,6 +4,7 @@ import pandas as pd
 from shiny import App, reactive, render, ui
 from shinywidgets import output_widget, render_widget
 import plotly.express as px
+import matplotlib.pyplot as plt
 
 
 # =============================================================================
@@ -181,6 +182,80 @@ app_ui = ui.page_fluid(
         .title-link:hover { text-decoration: none; }
         .muted { color: var(--muted); }
         .card-title { margin-bottom: 0.25rem; }
+        .stat-link { color: inherit; text-decoration: none; font-weight: 600; }
+        .stat-link:hover, .stat-link:focus { color: inherit; text-decoration: underline; }
+        #shiny-modal .modal-dialog { max-width: min(1080px, 92vw); }
+        #shiny-modal .modal-content {
+          border: 1px solid #dbe4f0;
+          border-radius: 16px;
+          overflow: hidden;
+          box-shadow: 0 20px 45px rgba(15, 23, 42, 0.18);
+        }
+        #shiny-modal .modal-header {
+          background: linear-gradient(135deg, #f8fbff 0%, #eaf2ff 100%);
+          border-bottom: 1px solid #dbe4f0;
+          padding: 0.42rem 1rem 0.38rem;
+        }
+        #shiny-modal .modal-title { font-weight: 700; letter-spacing: 0.2px; }
+        #shiny-modal .modal-body.dist-modal { background: #f8fafc; padding: 0.02rem 0.9rem 0.65rem; }
+        #shiny-modal .modal-body.dist-modal > .dist-detail-card {
+          border: 1px solid #dbe4f0;
+          border-radius: 14px;
+          box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+          margin: 0 !important;
+          margin-top: 0.8rem !important;
+        }
+        #shiny-modal .modal-body.dist-modal > .dist-detail-card > .card-body { padding: 0.16rem 0.7rem 0.18rem; }
+        .dist-kicker {
+          margin: 0 0 0.45rem 0;
+          color: #64748b;
+          font-size: 0.9rem;
+          line-height: 1.2;
+        }
+        .dist-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.45rem;
+          margin-top: 0.5rem;
+          margin-bottom: 0.2rem;
+        }
+        .dist-chip {
+          display: inline-flex;
+          align-items: center;
+          border: 1px solid #dbe4f0;
+          border-radius: 999px;
+          background: #ffffff;
+          color: #334155;
+          font-size: 0.78rem;
+          line-height: 1;
+          padding: 0.32rem 0.62rem;
+          white-space: nowrap;
+        }
+        .dist-plot-scroll {
+          max-height: 58vh;
+          overflow-y: auto;
+          overflow-x: hidden;
+          margin-top: -1.5rem;
+          padding-right: 0.1rem;
+          padding-bottom: 0.45rem;
+        }
+        .dist-plot-scroll .plotly,
+        .dist-plot-scroll .js-plotly-plot,
+        .dist-plot-scroll .plotly-graph-div,
+        .dist-plot-scroll .html-widget {
+          width: 100% !important;
+          min-width: 100% !important;
+          display: block;
+        }
+        #shiny-modal .modal-body.dist-modal .shiny-ipywidget-output {
+          width: 100% !important;
+          min-width: 100% !important;
+        }
+        #shiny-modal .modal-body.dist-modal .shiny-ipywidget-output > * {
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: 100% !important;
+        }
         .vb-number { font-size: 1.7rem; font-weight: 700; line-height: 1.2; }
         .vb-label { font-size: 0.9rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
         .vb-row { margin-bottom: 0.15rem; }
@@ -231,6 +306,10 @@ app_ui = ui.page_fluid(
           min-width: 130px !important;
           max-width: 130px !important;
           white-space: nowrap;
+        }
+        shiny-data-frame#tbl .shiny-data-grid > table > tbody > tr,
+        shiny-data-frame#tbl .shiny-data-grid > table > tbody > tr > td {
+          cursor: pointer;
         }
         .card-header { background: var(--accent-soft); border-bottom: 1px solid var(--stroke); font-weight: 600; }
         .sidebar { background: #f3f6fb; border-right: 1px solid var(--stroke); }
@@ -294,6 +373,8 @@ import pandas as pd
 def server(input, output, session):
     show_time = reactive.value(False)
     page = reactive.value("main")  # "main" | "company"
+    pending_company_key = reactive.value("")
+    pending_company_label = reactive.value("")
 
     def _first_existing_col(d: pd.DataFrame, candidates: list[str]) -> str | None:
         for c in candidates:
@@ -501,6 +582,273 @@ def server(input, output, session):
             ui.div("Economic sectors", class_="vb-label"),
         )
 
+    @reactive.effect
+    @reactive.event(input.open_hq_dist)
+    def _show_hq_distribution_modal():
+        d = filtered()
+        col = "hq_country" if "hq_country" in d.columns else ("hq_code" if "hq_code" in d.columns else "")
+        dist = _distribution_counts(d, col) if col else pd.DataFrame()
+        snapshot = _selection_snapshot_label(d)
+        n_companies = _unique_company_count(d)
+        n_categories = int(dist["category"].nunique()) if not dist.empty else 0
+        plot_h = _distribution_plot_height(n_categories)
+
+        ui.modal_show(
+            ui.modal(
+                ui.card(
+                    ui.div(
+                        ui.tags.span(f"{n_companies:,} companies".replace(",", "."), class_="dist-chip"),
+                        ui.tags.span(f"{n_categories:,} HQ groups".replace(",", "."), class_="dist-chip"),
+                        class_="dist-meta",
+                    ),
+                    ui.div(
+                        ui.output_plot("plot_hq_distribution_detail", width="100%", height=f"{plot_h}px"),
+                        class_="dist-plot-scroll",
+                    ),
+                    class_="dist-detail-card",
+                    full_screen=False,
+                ),
+                title=f"Headquarters Countries — Exact Distribution — {snapshot}",
+                size="xl",
+                easy_close=True,
+                footer=None,
+                class_="dist-modal",
+            )
+        )
+
+    @reactive.effect
+    @reactive.event(input.open_sector_dist)
+    def _show_sector_distribution_modal():
+        d = filtered()
+        col = _sector_col(d) or ""
+        dist = _distribution_counts(d, col) if col else pd.DataFrame()
+        snapshot = _selection_snapshot_label(d)
+        n_companies = _unique_company_count(d)
+        n_categories = int(dist["category"].nunique()) if not dist.empty else 0
+        plot_h = _distribution_plot_height(n_categories)
+
+        ui.modal_show(
+            ui.modal(
+                ui.card(
+                    ui.div(
+                        ui.tags.span(f"{n_companies:,} companies".replace(",", "."), class_="dist-chip"),
+                        ui.tags.span(f"{n_categories:,} sector groups".replace(",", "."), class_="dist-chip"),
+                        class_="dist-meta",
+                    ),
+                    ui.div(
+                        ui.output_plot("plot_sector_distribution_detail", width="100%", height=f"{plot_h}px"),
+                        class_="dist-plot-scroll",
+                    ),
+                    class_="dist-detail-card",
+                    full_screen=False,
+                ),
+                title=f"Industry Sectors — Exact Distribution — {snapshot}",
+                size="xl",
+                easy_close=True,
+                footer=None,
+                class_="dist-modal",
+            )
+        )
+
+    def _selection_snapshot_label(d: pd.DataFrame) -> str:
+        if d is None or d.empty:
+            return "No data"
+        if "q_label" in d.columns:
+            q = d["q_label"].dropna().astype(str)
+            if not q.empty:
+                return str(q.iloc[0])
+        if "date" in d.columns:
+            dt = pd.to_datetime(d["date"], errors="coerce")
+            dt = dt[dt.notna()]
+            if not dt.empty:
+                return str(dt.max().date())
+        y = str(_safe_input("year", "")).strip()
+        return y if y else "Current selection"
+
+    def _unique_company_count(d: pd.DataFrame) -> int:
+        if d is None or d.empty:
+            return 0
+        dd = _with_company_key(d)
+        if "_company_key" not in dd.columns:
+            return 0
+        keys = dd["_company_key"].fillna("").astype(str).str.strip()
+        keys = keys[keys != ""]
+        return int(keys.nunique())
+
+    def _distribution_plot_height(n_categories: int) -> int:
+        n = max(int(n_categories), 1)
+        return max(360, 34 * n + 180)
+
+    def _distribution_counts(
+        d: pd.DataFrame,
+        category_col: str,
+        missing_label: str = "(Missing)",
+    ) -> pd.DataFrame:
+        if d is None or d.empty or category_col not in d.columns:
+            return pd.DataFrame()
+
+        dd = _with_company_key(d)
+        if "_company_key" not in dd.columns:
+            return pd.DataFrame()
+
+        dd["_company_key"] = dd["_company_key"].fillna("").astype(str).str.strip()
+        dd = dd.loc[dd["_company_key"] != ""].copy()
+        if dd.empty:
+            return pd.DataFrame()
+
+        cat = dd[category_col].fillna(missing_label).astype(str).str.strip()
+        cat = cat.where(cat != "", missing_label)
+        dd["_cat"] = cat
+
+        out = (
+            dd.groupby("_cat")["_company_key"]
+            .nunique()
+            .reset_index(name="n_companies")
+        )
+        total = int(out["n_companies"].sum())
+        if total <= 0:
+            return pd.DataFrame()
+
+        out["share_pct"] = (out["n_companies"] / total) * 100
+        out = out.sort_values("n_companies", ascending=False)
+        out = out.rename(columns={"_cat": "category"})
+        out["label"] = out["n_companies"].astype(int).astype(str) + " (" + out["share_pct"].map(lambda x: f"{x:.1f}%") + ")"
+        return out
+
+    def _distribution_figure(
+        dist: pd.DataFrame,
+        *,
+        base_color: str,
+        hover_label: str,
+    ):
+        n = len(dist)
+        if n <= 0:
+            fig = px.bar()
+            fig.add_annotation(text="No distribution available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        if base_color == "teal":
+            palette = px.colors.sequential.Tealgrn
+        else:
+            palette = px.colors.sequential.Blues
+        idx = [int(round(i * (len(palette) - 1) / max(n - 1, 1))) for i in range(n)]
+        bar_colors = [palette[i] for i in idx]
+
+        fig = px.bar(
+            dist,
+            x="n_companies",
+            y="category",
+            orientation="h",
+            text="label",
+        )
+        fig.update_traces(
+            marker_color=bar_colors,
+            marker_line_color="#ffffff",
+            marker_line_width=1.0,
+            customdata=dist[["share_pct"]],
+            hovertemplate=f"{hover_label}: %{{y}}<br>Companies: %{{x}}<br>Share: %{{customdata[0]:.1f}}%<extra></extra>",
+            textposition="auto",
+            textfont=dict(size=13, color="#334155"),
+            cliponaxis=False,
+        )
+        max_x = float(dist["n_companies"].max())
+        fig.update_layout(
+            height=max(360, 34 * n + 180),
+            xaxis_title="Number of companies",
+            yaxis_title="",
+            margin=dict(l=96, r=12, t=0, b=48),
+            plot_bgcolor="#f8fafc",
+            paper_bgcolor="#ffffff",
+            bargap=0.2,
+            autosize=True,
+            font=dict(color="#1f2937"),
+        )
+        fig.update_xaxes(
+            showgrid=True,
+            gridcolor="#e2e8f0",
+            zeroline=False,
+            tickformat=",d",
+            range=[0, max_x],
+            domain=[0.0, 1.0],
+            fixedrange=True,
+        )
+        fig.update_yaxes(showgrid=False, fixedrange=True, ticklabelstandoff=14, automargin=True)
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    def _distribution_matplotlib_figure(
+        dist: pd.DataFrame,
+        *,
+        base_color: str,
+    ):
+        n = len(dist)
+        if n <= 0:
+            fig, ax = plt.subplots(figsize=(10.0, 4.0))
+            ax.text(0.5, 0.5, "No distribution available", ha="center", va="center", transform=ax.transAxes)
+            ax.axis("off")
+            return fig
+
+        if base_color == "teal":
+            cmap = plt.cm.YlGnBu
+            c_start, c_end = 0.45, 0.85
+        else:
+            cmap = plt.cm.Blues
+            c_start, c_end = 0.45, 0.9
+
+        fig_h = max(4.0, 0.44 * n + 1.4)
+        fig, ax = plt.subplots(figsize=(12.0, fig_h))
+
+        if n == 1:
+            colors = [cmap((c_start + c_end) / 2.0)]
+        else:
+            colors = [cmap(c_start + (c_end - c_start) * i / (n - 1)) for i in range(n)]
+
+        y_pos = range(n)
+        cats = dist["category"].tolist()
+        vals = dist["n_companies"].tolist()
+        labels = dist["label"].tolist()
+        bars = ax.barh(y_pos, vals, color=colors, edgecolor="#ffffff", linewidth=1.0, height=0.8)
+
+        ax.set_yticks(list(y_pos))
+        ax.set_yticklabels(cats)
+        ax.invert_yaxis()
+        ax.set_ylim(n - 0.5, -0.7)
+        ax.tick_params(axis="y", pad=12, length=0)
+        ax.tick_params(axis="x", labelsize=9)
+
+        max_x = float(max(vals))
+        ax.set_xlim(0, max_x * 1.08)
+        ax.margins(x=0)
+        ax.grid(axis="x", color="#e2e8f0", linewidth=1.0)
+        ax.set_axisbelow(True)
+        ax.set_xlabel("Number of companies", labelpad=8)
+
+        for spine in ("top", "right", "left"):
+            ax.spines[spine].set_visible(False)
+        ax.spines["bottom"].set_color("#cbd5e1")
+
+        text_pad = max_x * 0.008
+        for bar, txt in zip(bars, labels):
+            x = bar.get_width()
+            y = bar.get_y() + bar.get_height() / 2.0
+            ax.text(x + text_pad, y, txt, va="center", ha="left", fontsize=10, color="#334155")
+
+        fig.patch.set_facecolor("white")
+        ax.set_facecolor("#f8fafc")
+        # Keep extra room left/right so long category labels and value labels are fully visible.
+        fig.subplots_adjust(left=0.18, right=0.90, top=0.98, bottom=0.11)
+        return fig
+
     @render.ui
     def vb_company_years():
         d = _company_df()
@@ -580,11 +928,33 @@ def server(input, output, session):
         )
 
     # ---- Table ----
-    @render.data_frame
-    def tbl():
-        d = filtered()
+    @reactive.calc
+    def _constituents_table_data() -> pd.DataFrame:
+        d = _with_company_key(filtered())
+        if d.empty:
+            return pd.DataFrame()
+
+        if "name" in d.columns:
+            d["_company_label"] = _series_clean_str(d, "name")
+        else:
+            d["_company_label"] = ""
+        d["_company_label"] = d["_company_label"].where(d["_company_label"] != "", d["_company_key"])
+
         d = d.drop(
-            columns=["date", "year", "q_year", "q_num", "q_label", "hq_code", "trbc_sector_code", "firm_id", "FirmID", "FIRM_ID", "ISIN", "isin"],
+            columns=[
+                "date",
+                "year",
+                "q_year",
+                "q_num",
+                "q_label",
+                "hq_code",
+                "trbc_sector_code",
+                "firm_id",
+                "FirmID",
+                "FIRM_ID",
+                "ISIN",
+                "isin",
+            ],
             errors="ignore",
         )
         if "mcap_eur" in d.columns:
@@ -593,6 +963,12 @@ def server(input, output, session):
             d["rank_mcap"] = d["rank_mcap"].map(
                 lambda x: str(int(x)) if pd.notna(x) else ""
             )
+
+        return d
+
+    @render.data_frame
+    def tbl():
+        d = _constituents_table_data()
         rename_map = {
             "name": "Company",
             "hq_country": "HQ Country",
@@ -609,10 +985,61 @@ def server(input, output, session):
         d = d.rename(columns={k: v for k, v in rename_map.items() if k in d.columns})
         return render.DataGrid(
             d,
-            row_selection_mode="multiple",
+            selection_mode="row",
             filters=True,
             height="720px",
         )
+
+    @reactive.effect
+    @reactive.event(tbl.cell_selection)
+    def _open_company_from_table_click():
+        if page.get() != "main":
+            return
+
+        sel = tbl.cell_selection()
+        if not sel or not sel.get("rows"):
+            return
+
+        selected_rows = tbl.data_view(selected=True)
+        if selected_rows is None or selected_rows.empty:
+            return
+
+        src = _constituents_table_data()
+        if src.empty or "_company_key" not in src.columns:
+            return
+
+        row_idx = selected_rows.index[0]
+        if row_idx not in src.index:
+            return
+
+        row = src.loc[row_idx]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+
+        key = str(row.get("_company_key", "")).strip()
+        label = str(row.get("_company_label", "")).strip()
+        if key == "":
+            return
+
+        pending_company_key.set(key)
+        pending_company_label.set(label if label else key)
+        show_time.set(False)
+        page.set("company")
+
+    @reactive.effect
+    def _apply_pending_company_selection():
+        if page.get() != "company":
+            return
+
+        key = str(pending_company_key.get()).strip()
+        if key == "":
+            return
+
+        label = str(pending_company_label.get()).strip() or key
+        ui.update_text("company_search", value=label)
+        ui.update_selectize("company_choice", choices={key: label}, selected=key)
+        pending_company_key.set("")
+        pending_company_label.set("")
 
     # ---- Time variation helpers ----
     def _time_series_labels(d: pd.DataFrame) -> tuple[str, list[str]]:
@@ -739,7 +1166,7 @@ def server(input, output, session):
         q_upper = q.upper()
         blob = master["_search_blob"].fillna("").astype(str)
 
-        # Ranking: exact key/firm_id/isin > startswith > contains in any searchable field.
+        # Ranking: exact key/firm_id/isin/name > startswith > contains in any searchable field.
         contains_any = blob.str.contains(q_upper, na=False, regex=False)
 
         matches = master.loc[contains_any].copy()
@@ -756,11 +1183,13 @@ def server(input, output, session):
             m_key.str.upper().eq(q_upper)
             | m_fid.str.upper().eq(q_upper)
             | m_isin.str.upper().eq(q_upper)
+            | m_nm.str.upper().eq(q_upper)
         )
         m_starts = (
             m_key.str.upper().str.startswith(q_upper)
             | m_fid.str.upper().str.startswith(q_upper)
             | m_isin.str.upper().str.startswith(q_upper)
+            | m_nm.str.upper().str.startswith(q_upper)
         )
         matches["_rank"] = (
             m_exact.map({True: 0, False: 1}).astype(int) * 100
@@ -778,15 +1207,21 @@ def server(input, output, session):
 
         selected = _safe_input("company_choice", "")
         if selected not in set(values):
-            # If the query is an exact ID match, auto-select it; else leave empty.
+            # Auto-select for exact ID match first; then exact company-name match.
+            selected = ""
             if q_upper in set(v.upper() for v in values):
                 # pick the first exact match (case-insensitive)
                 for v in values:
                     if v.upper() == q_upper:
                         selected = v
                         break
-            else:
-                selected = ""
+            if selected == "":
+                exact_name_keys = matches.loc[
+                    matches["_display_name"].astype(str).str.upper().eq(q_upper),
+                    "_company_key",
+                ].astype(str)
+                if not exact_name_keys.empty:
+                    selected = str(exact_name_keys.iloc[0])
 
         ui.update_selectize("company_choice", choices=choices, selected=selected)
 
@@ -893,14 +1328,20 @@ def server(input, output, session):
                     ui.column(
                         3,
                         ui.card(
-                        ui.h6("Headquarters Countries", class_="card-title"),
+                        ui.h6(
+                            ui.input_action_link("open_hq_dist", "Headquarters Countries", class_="stat-link"),
+                            class_="card-title",
+                        ),
                             ui.output_ui("vb_countries"),
                         ),
                     ),
                     ui.column(
                         3,
                         ui.card(
-                        ui.h6("Industry Sectors", class_="card-title"),
+                        ui.h6(
+                            ui.input_action_link("open_sector_dist", "Industry Sectors", class_="stat-link"),
+                            class_="card-title",
+                        ),
                             ui.output_ui("vb_sectors"),
                         ),
                     ),
@@ -940,7 +1381,7 @@ def server(input, output, session):
                 ui.column(
                     6,
             ui.card(
-                ui.card_header("Top 5 Sectors — Share of Index"),
+                ui.card_header("Top 5 Sectors — Share of Index (Market Cap Weighted)"),
                 output_widget("plot_top5_sectors", width="100%", height="360px"),
                 class_="plot-card",
                 full_screen=False,
@@ -949,8 +1390,28 @@ def server(input, output, session):
                 ui.column(
                     6,
             ui.card(
-                ui.card_header("Top 5 HQ Countries (% of Index)"),
+                ui.card_header("Top 5 HQ Countries — Share of Index (Market Cap Weighted)"),
                 output_widget("plot_top5_countries", width="100%", height="360px"),
+                class_="plot-card",
+                full_screen=False,
+            ),
+                ),
+            ),
+            ui.row(
+                ui.column(
+                    6,
+            ui.card(
+                ui.card_header("Top 5 Sectors — Share of Index (Equal Weighted)"),
+                output_widget("plot_top5_sectors_eqw", width="100%", height="360px"),
+                class_="plot-card",
+                full_screen=False,
+            ),
+                ),
+                ui.column(
+                    6,
+            ui.card(
+                ui.card_header("Top 5 HQ Countries — Share of Index (Equal Weighted)"),
+                output_widget("plot_top5_countries_eqw", width="100%", height="360px"),
                 class_="plot-card",
                 full_screen=False,
             ),
@@ -1054,6 +1515,42 @@ def server(input, output, session):
         )
         return fig
 
+    @render.plot(alt="Headquarters country distribution")
+    def plot_hq_distribution_detail():
+        d = filtered()
+        col = "hq_country" if "hq_country" in d.columns else ("hq_code" if "hq_code" in d.columns else "")
+        if not col:
+            fig, ax = plt.subplots(figsize=(10.0, 4.0))
+            ax.text(0.5, 0.5, "No HQ data available", ha="center", va="center", transform=ax.transAxes)
+            ax.axis("off")
+            return fig
+
+        dist = _distribution_counts(d, col)
+        if dist.empty:
+            fig, ax = plt.subplots(figsize=(10.0, 4.0))
+            ax.text(0.5, 0.5, "No distribution available for this selection", ha="center", va="center", transform=ax.transAxes)
+            ax.axis("off")
+            return fig
+        return _distribution_matplotlib_figure(dist, base_color="teal")
+
+    @render.plot(alt="Sector distribution")
+    def plot_sector_distribution_detail():
+        d = filtered()
+        col = _sector_col(d) or ""
+        if not col:
+            fig, ax = plt.subplots(figsize=(10.0, 4.0))
+            ax.text(0.5, 0.5, "No sector data available", ha="center", va="center", transform=ax.transAxes)
+            ax.axis("off")
+            return fig
+
+        dist = _distribution_counts(d, col)
+        if dist.empty:
+            fig, ax = plt.subplots(figsize=(10.0, 4.0))
+            ax.text(0.5, 0.5, "No distribution available for this selection", ha="center", va="center", transform=ax.transAxes)
+            ax.axis("off")
+            return fig
+        return _distribution_matplotlib_figure(dist, base_color="blue")
+
     @render_widget
     def plot_top5_sectors():
         d = DF.copy()
@@ -1148,6 +1645,159 @@ def server(input, output, session):
         by_q_country["share"] = (by_q_country["mcap_eur"] / by_q_country["mcap_eur_total"]) * 100
         by_q_country = by_q_country[by_q_country["hq_country"].isin(top5)]
         by_q_country[label_col] = by_q_country[label_col].astype(str)
+        fig = px.line(
+            by_q_country,
+            x=label_col,
+            y="share",
+            color="hq_country",
+        )
+        fig.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Share of index (%)",
+            margin=dict(l=60, r=20, t=10, b=45),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            hovermode="x unified",
+            legend_title_text="",
+            legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0, font=dict(size=12)),
+            legend_font_size=12,
+            autosize=True,
+        )
+        tickvals, ticktext = _five_year_ticks(labels)
+        if tickvals:
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb")
+        fig.update_traces(
+            hovertemplate="Year: %{x}<br>Country: %{fullData.name}<br>Index Share: %{y:.1f}%<extra></extra>"
+        )
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    @render_widget
+    def plot_top5_sectors_eqw():
+        d = _with_company_key(DF.copy())
+        label_col, labels = _time_series_labels(d)
+        sector_col = _sector_col(d)
+        if (
+            not sector_col
+            or "_company_key" not in d.columns
+            or d.empty
+            or not label_col
+            or not labels
+        ):
+            fig = px.bar()
+            fig.add_annotation(text="No sector data available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d["_company_key"] = d["_company_key"].fillna("").astype(str).str.strip()
+        d = d.loc[d["_company_key"] != ""].copy()
+        if d.empty:
+            fig = px.bar()
+            fig.add_annotation(text="No company IDs available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        total_by_sector = d.groupby(sector_col)["_company_key"].size().sort_values(ascending=False)
+        top5 = total_by_sector.head(5).index.tolist()
+        by_q_sector = (
+            d.groupby([label_col, sector_col])["_company_key"]
+            .nunique()
+            .reset_index(name="n_firms")
+        )
+        total_by_q = d.groupby(label_col)["_company_key"].nunique().reset_index(name="n_firms_total")
+        by_q_sector = by_q_sector.merge(total_by_q, on=label_col, how="left")
+        by_q_sector["share"] = (by_q_sector["n_firms"] / by_q_sector["n_firms_total"]) * 100
+        by_q_sector = by_q_sector[by_q_sector[sector_col].isin(top5)]
+        by_q_sector[label_col] = by_q_sector[label_col].astype(str)
+
+        fig = px.line(
+            by_q_sector,
+            x=label_col,
+            y="share",
+            color=sector_col,
+        )
+        fig.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Share of index (%)",
+            margin=dict(l=60, r=20, t=10, b=60),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            hovermode="x unified",
+            legend_title_text="",
+            legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0, font=dict(size=12)),
+            legend_font_size=12,
+            autosize=True,
+        )
+        tickvals, ticktext = _five_year_ticks(labels)
+        if tickvals:
+            fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb")
+        fig.update_traces(
+            hovertemplate="Year: %{x}<br>Sector: %{fullData.name}<br>Index Share: %{y:.1f}%<extra></extra>"
+        )
+        fig.update_layout(
+            dragmode=False,
+            modebar_remove=[
+                "zoom2d","pan2d","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d",
+                "zoom3d","pan3d","orbitRotation","tableRotation",
+                "resetViewMapbox","zoomInGeo","zoomOutGeo","resetGeo",
+                "select2d","lasso2d","toImage","toggleSpikelines"
+            ],
+        )
+        return fig
+
+    @render_widget
+    def plot_top5_countries_eqw():
+        d = _with_company_key(DF.copy())
+        label_col, labels = _time_series_labels(d)
+        if (
+            "hq_country" not in d.columns
+            or "_company_key" not in d.columns
+            or d.empty
+            or not label_col
+            or not labels
+        ):
+            fig = px.bar()
+            fig.add_annotation(text="No HQ data available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        d["_company_key"] = d["_company_key"].fillna("").astype(str).str.strip()
+        d = d.loc[d["_company_key"] != ""].copy()
+        if d.empty:
+            fig = px.bar()
+            fig.add_annotation(text="No company IDs available", x=0.5, y=0.5, showarrow=False)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig
+
+        total_by_country = d.groupby("hq_country")["_company_key"].size().sort_values(ascending=False)
+        top5 = total_by_country.head(5).index.tolist()
+        by_q_country = (
+            d.groupby([label_col, "hq_country"])["_company_key"]
+            .nunique()
+            .reset_index(name="n_firms")
+        )
+        total_by_q = d.groupby(label_col)["_company_key"].nunique().reset_index(name="n_firms_total")
+        by_q_country = by_q_country.merge(total_by_q, on=label_col, how="left")
+        by_q_country["share"] = (by_q_country["n_firms"] / by_q_country["n_firms_total"]) * 100
+        by_q_country = by_q_country[by_q_country["hq_country"].isin(top5)]
+        by_q_country[label_col] = by_q_country[label_col].astype(str)
+
         fig = px.line(
             by_q_country,
             x=label_col,
